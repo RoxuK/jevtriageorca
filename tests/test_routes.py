@@ -170,6 +170,12 @@ class RoutesTest(AppTestCase):
                 self.assertIn('name="name" value="cheap"', body)
                 self.assertIn('name="price_cents" value="100"', body)
 
+    def test_edit_error_rerenders_submitted_values(self):
+        rid = self.add()
+        _, _, body = self.post_form(f"/routes/{rid}/edit", dict(STRONG, price_cents="abc"))
+        self.assertIn('name="price_cents" value="abc"', body)
+        self.assertIn('name="name" value="strong"', body)
+
     def test_edit_error_rerender_escaped(self):
         rid = self.add()
         status, _, body = self.post_form(f"/routes/{rid}/edit", dict(CHEAP, name="<script>x</script>", price_cents="abc"))

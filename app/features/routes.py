@@ -146,6 +146,10 @@ def _find_route(req: Request):
     return None if route_id is None else _get_route(route_id)
 
 
+def _not_found() -> Response:
+    return html_response(page("Not found", "<h1>Route not found</h1>"), 404)
+
+
 def _submitted(req: Request) -> dict[str, str]:
     return {k: req.form.get(k, "") for k in _FIELD_KEYS}
 
@@ -169,7 +173,7 @@ def add_route(req: Request) -> Response:
 def edit_route_form(req: Request) -> Response:
     stored = _find_route(req)
     if stored is None:
-        return html_response(page("Not found", "<h1>Route not found</h1>"), 404)
+        return _not_found()
     return _render_edit(stored["id"], {k: str(stored[k]) for k in _FIELD_KEYS})
 
 
@@ -177,7 +181,7 @@ def edit_route_form(req: Request) -> Response:
 def edit_route(req: Request) -> Response:
     stored = _find_route(req)
     if stored is None:
-        return html_response(page("Not found", "<h1>Route not found</h1>"), 404)
+        return _not_found()
     values = _submitted(req)
     error = _validate(values)
     if error:
@@ -190,6 +194,6 @@ def edit_route(req: Request) -> Response:
 def delete_route(req: Request) -> Response:
     stored = _find_route(req)
     if stored is None:
-        return html_response(page("Not found", "<h1>Route not found</h1>"), 404)
+        return _not_found()
     _delete_route(stored["id"])
     return redirect("/routes")
