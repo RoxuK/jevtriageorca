@@ -2,6 +2,7 @@ import os
 import re
 import sqlite3
 
+from app.features.decisions import _band
 from tests.support import AppTestCase
 
 
@@ -183,3 +184,80 @@ class DecisionLogTest(AppTestCase):
         _, _, body = self.get("/decisions")
         self.assertEqual(body.count("Labelled right"), 1)
         self.assertEqual(body.count("Unlabelled"), 2)
+
+    def summary(self) -> str:
+        _, _, body = self.get("/decisions")
+        return re.search(r'<div class="summary">.*?</ul></div>', body, re.S).group(0)
+
+    def label(self, did: int, verdict: str) -> None:
+        extra = {"correct_route_id": str(self.add_route("pricey"))} if verdict == "wrong" else {}
+        self.post_form(f"/decisions/{did}/label", {"verdict": verdict, **extra})
+
+    def labelled(self, verdicts: list, confidence: int = 870) -> list:
+        ids = [self.add(confidence=confidence) for _ in verdicts]
+        for did, verdict in zip(ids, verdicts):
+            self.label(did, verdict)
+        return ids
+
+    def test_no_labels_shows_zero_and_no_percentage(self):
+        status, _, body = self.get("/decisions")
+        self.assertEqual(status, 200)
+        self.assertIn("Accuracy: 0 labelled</p>", body)
+        self.assertNotIn("%", self.summary())
+
+    def test_no_labels_with_unlabelled_decisions(self):
+        self.add()
+        self.assertIn("Accuracy: 0 labelled</p>", self.summary())
+        self.assertNotIn("%", self.summary())
+
+    def test_two_labelled_of_three_is_fifty_percent(self):
+        self.add()
+        self.labelled(["right", "wrong"])
+        self.assertIn("Accuracy: 2 labelled, 50%</p>", self.summary())
+
+    def test_four_labelled_then_relabel_to_seventy_five(self):
+        ids = self.labelled(["right", "right", "wrong", "wrong"])
+        self.assertIn("Accuracy: 4 labelled, 50%</p>", self.summary())
+        self.label(ids[2], "right")
+        self.assertIn("Accuracy: 4 labelled, 75%</p>", self.summary())
+
+    def test_bands_listed_and_counts_sum_to_total(self):
+        self.labelled(["right"], confidence=100)
+        self.labelled(["wrong", "right"], confidence=650)
+        self.labelled(["right"], confidence=950)
+        summary = self.summary()
+        self.assertIn("<li>below 0.5: 1 labelled, 100%</li>", summary)
+        self.assertIn("<li>0.5 to 0.8: 2 labelled, 50%</li>", summary)
+        self.assertIn("<li>above 0.8: 1 labelled, 100%</li>", summary)
+        self.assertIn("Accuracy: 4 labelled, 75%</p>", summary)
+
+    def test_band_helper_edges(self):
+        self.assertEqual(_band(499), "below 0.5")
+        self.assertEqual(_band(500), "0.5 to 0.8")
+        self.assertEqual(_band(800), "0.5 to 0.8")
+        self.assertEqual(_band(801), "above 0.8")
+
+    def test_empty_band_shows_zero_and_no_percentage(self):
+        self.labelled(["right"], confidence=900)
+        summary = self.summary()
+        self.assertIn("<li>below 0.5: 0 labelled</li>", summary)
+        self.assertIn("<li>0.5 to 0.8: 0 labelled</li>", summary)
+
+    def test_one_of_three_is_33_percent(self):
+        self.labelled(["right", "wrong", "wrong"])
+        self.assertIn("Accuracy: 3 labelled, 33%</p>", self.summary())
+
+    def test_two_of_three_is_67_percent(self):
+        self.labelled(["right", "right", "wrong"])
+        self.assertIn("Accuracy: 3 labelled, 67%</p>", self.summary())
+
+    def test_half_rounds_up(self):
+        self.labelled(["right"] + ["wrong"] * 7)
+        self.assertIn("Accuracy: 8 labelled, 13%</p>", self.summary())
+
+    def test_bad_label_posts_leave_summary_unchanged(self):
+        self.labelled(["right", "wrong"])
+        before = self.summary()
+        self.post_form("/decisions/abc/label", {"verdict": "right"})
+        self.post_form("/decisions/999999/label", {"verdict": "right"})
+        self.assertEqual(self.summary(), before)
