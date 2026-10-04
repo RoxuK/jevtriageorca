@@ -6,7 +6,7 @@
 ## What Jev Triage for Orca is
 
 Jev Triage for Orca is a small web app where one developer defines model routes for
-their coding agents, pastes a coding task, and sees which route a fast decision model
+their coding agents, pastes a piece of coding work, and sees which route a fast decision model
 (Jev, `typesafe/jev-1.13` on OpenRouter) would send it to: the chosen route, the
 probability for every route, the confidence, and whether the escalation rule fired.
 Every decision is saved, can be labelled right or wrong, and feeds an accuracy summary
