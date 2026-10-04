@@ -30,6 +30,7 @@ db.migration(
 NAV.append(("/tester", "Tester"))
 
 _MAX_ID = 2**63 - 1  # SQLite INTEGER ceiling
+_MAX_ID_DIGITS = len(str(_MAX_ID))  # checked before int() to stay under Python's digit limit
 _DECIDER: Decider = OfflineDecider()
 
 
@@ -64,7 +65,7 @@ def _save_decision(task: str, routes: list, decision: Decision) -> int:
 
 def _find_decision(raw_id: str):
     """(decision row, its probability rows), or None when the id is malformed or unknown."""
-    if not (raw_id.isascii() and raw_id.isdigit()) or int(raw_id) > _MAX_ID:
+    if not (raw_id.isascii() and raw_id.isdigit()) or len(raw_id) > _MAX_ID_DIGITS or int(raw_id) > _MAX_ID:
         return None
     conn = db.connect()
     try:

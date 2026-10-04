@@ -155,3 +155,6 @@ class TesterTest(AppTestCase):
 
     def test_oversized_decision_id_is_404(self):
         self.assertEqual(self.get("/decisions/" + "9" * 40)[0], 404)
+
+    def test_decision_id_beyond_int_digit_limit_is_404(self):
+        self.assertEqual(self.get("/decisions/" + "9" * 5000)[0], 404)
