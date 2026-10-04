@@ -69,3 +69,5 @@ def list_things(req: Request) -> Response:
 - Close every connection you open (`try/finally`).
 - Keep one concern per change. A feature ticket touches its own module, its own
   test file, and at most `NAV` and its own migrations.
+
+See [factory workflow policy](factory/WORKFLOW_POLICY.md) for factory-specific shared-workflow requirements.
