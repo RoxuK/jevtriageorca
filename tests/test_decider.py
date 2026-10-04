@@ -56,6 +56,17 @@ class OfflineDeciderTest(unittest.TestCase):
         self.assertLess(decision.confidence, 500)
         self.assertGreaterEqual(decision.probabilities[2], 200)
 
+    def test_shared_word_lets_a_higher_id_route_win(self):
+        decision = self.decider.decide("redesign the architecture", TWO)
+        self.assertEqual(decision.pick, 2)
+        self.assertGreater(decision.probabilities[2], decision.probabilities[1])
+
+    def test_plural_in_criteria_matches_singular_in_task(self):
+        routes = [_route(1, 100), _route(2, 100, "typos and spelling")]
+        decision = self.decider.decide("fix the typo", routes)
+        self.assertEqual(decision.pick, 2)
+        self.assertGreater(decision.probabilities[2], decision.probabilities[1])
+
     def test_unmatched_one_word_and_multi_paragraph_tasks_are_valid(self):
         long_task = ("First paragraph about nothing.\n\n" * 80)
         self.assertGreaterEqual(len(long_task), 2000)
@@ -67,7 +78,7 @@ class OfflineDeciderTest(unittest.TestCase):
         routes = [_route(1, 100), _route(2, 500), _route(3, 1500)]
         short = self.decider.decide("zzz", routes).probabilities[3]
         long = self.decider.decide("x" * 2000, routes).probabilities[3]
-        self.assertGreaterEqual(long, short)
+        self.assertGreater(long, short)
 
     def test_tied_top_price_still_sums_to_1000(self):
         routes = [_route(1, 100), _route(2, 1500), _route(3, 1500)]
