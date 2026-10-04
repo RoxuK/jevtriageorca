@@ -104,6 +104,36 @@ def _row(d, routes: list) -> str:
     )
 
 
+_BANDS = ("below 0.5", "0.5 to 0.8", "above 0.8")
+
+
+def _band(confidence: int) -> str:
+    """The summary band for a confidence in stored thousandths."""
+    if confidence < 500:
+        return _BANDS[0]
+    return _BANDS[1] if confidence <= 800 else _BANDS[2]
+
+
+def _tally(labelled: int, right: int) -> str:
+    """"N labelled" plus whole-percent accuracy rounded half up, once something is labelled."""
+    if labelled == 0:
+        return "0 labelled"
+    return f"{labelled} labelled, {(200 * right + labelled) // (2 * labelled)}%"
+
+
+def _summary(decisions: list) -> str:
+    counts = {band: [0, 0] for band in _BANDS}
+    for d in decisions:
+        if d["verdict"] is None:
+            continue
+        tally = counts[_band(d["confidence"])]
+        tally[0] += 1
+        tally[1] += d["verdict"] == "right"
+    overall = [sum(t[0] for t in counts.values()), sum(t[1] for t in counts.values())]
+    bands = "".join(f"<li>{band}: {_tally(*tally)}</li>" for band, tally in counts.items())
+    return f'<div class="summary"><p>Accuracy: {_tally(*overall)}</p><ul>{bands}</ul></div>'
+
+
 def _render(error: str = "", status: int = 200) -> Response:
     decisions = _load_decisions()
     routes = _load_routes()
@@ -116,7 +146,9 @@ def _render(error: str = "", status: int = 200) -> Response:
             f"<tbody>{''.join(_row(d, routes) for d in decisions)}</tbody></table>"
         )
     banner = f'<p class="error">{h(error)}</p>' if error else ""
-    return html_response(page("Log", f'<h1>Log</h1>{banner}<div class="card">{content}</div>'), status)
+    return html_response(
+        page("Log", f'<h1>Log</h1>{banner}<div class="card">{_summary(decisions)}{content}</div>'), status
+    )
 
 
 @route("GET", "/decisions")
