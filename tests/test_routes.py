@@ -81,6 +81,17 @@ class RoutesTest(AppTestCase):
                 self.assertIn('class="error"', body)
                 self.assertEqual(self.count(), 0)
 
+    def test_oversized_prices_rejected_not_500(self):
+        for price in (str(2**63), "9" * 30, "9" * 5000):
+            with self.subTest(digits=len(price)):
+                status, _, body = self.post_form("/routes", dict(CHEAP, price_cents=price))
+                self.assertEqual(status, 400)
+                self.assertIn('class="error"', body)
+
+    def test_largest_price_accepted(self):
+        status, _, _ = self.post_form("/routes", dict(CHEAP, price_cents=str(2**63 - 1)))
+        self.assertEqual(status, 303)
+
     def test_zero_and_hundred_prices_accepted(self):
         for price in ("0", "100"):
             with self.subTest(price=price):

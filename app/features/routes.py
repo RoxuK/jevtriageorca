@@ -14,6 +14,8 @@ db.migration(
 )
 NAV.append(("/routes", "Routes"))
 
+_MAX_PRICE_CENTS = 2**63 - 1  # SQLite INTEGER ceiling
+
 _TEXT_FIELDS = (("name", "Name"), ("criteria", "Criteria"), ("target_model", "Target model"))
 
 
@@ -39,13 +41,20 @@ def _insert_route(name: str, criteria: str, target_model: str, price_cents: int)
         conn.close()
 
 
+def _parse_price(text: str) -> int | None:
+    """Whole cents in SQLite's integer range, or None."""
+    if not (text.isascii() and text.isdigit()) or len(text) > len(str(_MAX_PRICE_CENTS)):
+        return None
+    price = int(text)
+    return price if price <= _MAX_PRICE_CENTS else None
+
+
 def _validate(values: dict[str, str]) -> str:
     """Return an error message, or "" when the submitted values are acceptable."""
     for key, label in _TEXT_FIELDS:
         if not values[key]:
             return f"{label} is required."
-    price = values["price_cents"]
-    if not (price.isascii() and price.isdigit()):
+    if _parse_price(values["price_cents"]) is None:
         return "Price (cents per million tokens) must be a whole number of cents, 0 or more."
     return ""
 
@@ -91,5 +100,5 @@ def add_route(req: Request) -> Response:
     error = _validate(values)
     if error:
         return _render(values, error, 400)
-    _insert_route(values["name"], values["criteria"], values["target_model"], int(values["price_cents"]))
+    _insert_route(values["name"], values["criteria"], values["target_model"], _parse_price(values["price_cents"]))
     return redirect("/routes")
