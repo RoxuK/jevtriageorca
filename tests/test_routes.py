@@ -117,6 +117,92 @@ class RoutesTest(AppTestCase):
         self.assertEqual(status, 400)
         self.assertNotIn("<script>", body)
 
+    def add(self, fields=CHEAP) -> int:
+        self.post_form("/routes", fields)
+        conn = sqlite3.connect(os.environ["APP_DATABASE"])
+        try:
+            return conn.execute("SELECT MAX(id) FROM routes").fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_rows_have_edit_link_and_delete_button(self):
+        rid = self.add()
+        _, _, body = self.get("/routes")
+        self.assertIn(f'<a href="/routes/{rid}/edit">Edit</a>', body)
+        self.assertIn(f'<form method="post" action="/routes/{rid}/delete">', body)
+
+    def test_edit_form_prefilled(self):
+        rid = self.add()
+        status, _, body = self.get(f"/routes/{rid}/edit")
+        self.assertEqual(status, 200)
+        for key, value in CHEAP.items():
+            self.assertIn(f'name="{key}" value="{value}"', body)
+        self.assertIn(f'action="/routes/{rid}/edit"', body)
+
+    def test_edit_form_escapes_hostile_values(self):
+        rid = self.add(dict(CHEAP, name="<script>alert(1)</script>"))
+        _, _, body = self.get(f"/routes/{rid}/edit")
+        self.assertNotIn("<script>", body)
+        self.assertIn("&lt;script&gt;", body)
+
+    def test_edit_updates_route_keeping_id_and_others(self):
+        rid = self.add()
+        other = self.add(STRONG)
+        status, headers, _ = self.post_form(f"/routes/{rid}/edit", dict(STRONG, name="renamed", price_cents="7"))
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/routes")
+        _, _, body = self.get(f"/routes/{rid}/edit")
+        self.assertIn('name="name" value="renamed"', body)
+        self.assertIn('name="price_cents" value="7"', body)
+        _, _, body = self.get(f"/routes/{other}/edit")
+        self.assertIn('name="name" value="strong"', body)
+        self.assertIn('name="price_cents" value="1500"', body)
+
+    def test_edit_invalid_rejected_and_route_unchanged(self):
+        rid = self.add()
+        for key, bad in (("name", ""), ("criteria", ""), ("target_model", ""), ("price_cents", "abc")):
+            with self.subTest(field=key):
+                status, _, body = self.post_form(f"/routes/{rid}/edit", dict(STRONG, **{key: bad}))
+                self.assertEqual(status, 400)
+                self.assertIn('class="error" role="alert"', body)
+                self.assertIn(f'action="/routes/{rid}/edit"', body)
+                _, _, body = self.get(f"/routes/{rid}/edit")
+                self.assertIn('name="name" value="cheap"', body)
+                self.assertIn('name="price_cents" value="100"', body)
+
+    def test_edit_error_rerender_escaped(self):
+        rid = self.add()
+        status, _, body = self.post_form(f"/routes/{rid}/edit", dict(CHEAP, name="<script>x</script>", price_cents="abc"))
+        self.assertEqual(status, 400)
+        self.assertNotIn("<script>", body)
+
+    def test_edit_missing_fields_rejected_not_500(self):
+        rid = self.add()
+        self.assertEqual(self.post_form(f"/routes/{rid}/edit", {})[0], 400)
+
+    def test_delete_removes_only_that_route(self):
+        rid = self.add()
+        self.add(STRONG)
+        status, headers, _ = self.post_form(f"/routes/{rid}/delete", {})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/routes")
+        _, _, body = self.get("/routes")
+        self.assertNotIn(CHEAP["target_model"], body)
+        self.assertIn(STRONG["target_model"], body)
+        self.assertEqual(self.count(), 1)
+
+    def test_unknown_id_is_404(self):
+        self.assertEqual(self.get("/routes/999999/edit")[0], 404)
+        self.assertEqual(self.post_form("/routes/999999/edit", CHEAP)[0], 404)
+        self.assertEqual(self.post_form("/routes/999999/delete", {})[0], 404)
+
+    def test_non_numeric_id_is_404(self):
+        for bad in ("abc", "1.5", "-1", "9" * 5000):
+            with self.subTest(id=bad[:10]):
+                self.assertEqual(self.get(f"/routes/{bad}/edit")[0], 404)
+                self.assertEqual(self.post_form(f"/routes/{bad}/edit", CHEAP)[0], 404)
+                self.assertEqual(self.post_form(f"/routes/{bad}/delete", {})[0], 404)
+
 
 if __name__ == "__main__":
     unittest.main()
