@@ -6,10 +6,11 @@ deleting a route never changes a saved decision.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from app import db
-from app.features.decider import THOUSAND, Decider, Decision, OfflineDecider
+from app.features.decider import THOUSAND, Decider, Decision, JevDecider, OfflineDecider, Transport, urllib_transport
 from app.features.thresholds import apply_escalation, load_thresholds
 from app.layout import NAV, page
 from app.web import Request, Response, h, html_response, redirect, route
@@ -36,7 +37,14 @@ NAV.append(("/tester", "Tester"))
 
 _MAX_ID = 2**63 - 1  # SQLite INTEGER ceiling
 _MAX_ID_DIGITS = len(str(_MAX_ID))  # checked before int() to stay under Python's digit limit
-_DECIDER: Decider = OfflineDecider()
+_OFFLINE = OfflineDecider()
+_jev_transport: Transport = urllib_transport  # replaced by tests so none reaches the network
+
+
+def _select_decider() -> Decider:
+    """Jev when OPENROUTER_API_KEY is set and non-empty, read per request; else offline."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    return JevDecider(api_key, _jev_transport) if api_key else _OFFLINE
 
 
 def _load_routes() -> list:
@@ -129,7 +137,7 @@ def decide_task(req: Request) -> Response:
         return _render_tester(task, status=400)
     if not task:
         return _render_tester(task, "Task is required.", 400)
-    decision = _DECIDER.decide(task, routes)
+    decision = _select_decider().decide(task, routes)
     pick, escalated = apply_escalation(decision, routes, load_thresholds())
     return redirect(f"/decisions/{_save_decision(task, routes, decision, pick, escalated)}")
 

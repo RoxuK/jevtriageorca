@@ -1,7 +1,9 @@
+import json
 import socket
 import unittest
+import urllib.error
 
-from app.features.decider import Decider, Decision, OfflineDecider
+from app.features.decider import JEV_MODEL, JEV_URL, Decider, Decision, JevDecider, OfflineDecider
 
 CHEAP = {"id": 1, "name": "cheap", "criteria": "small edits, renames, typos", "price_cents": 100}
 STRONG = {
@@ -100,6 +102,95 @@ class OfflineDeciderTest(unittest.TestCase):
             self.decider.decide("fix the typo", TWO)
         finally:
             socket.socket.connect = original
+
+
+THREE = [_route(1, 100, "typo fixes"), _route(2, 500, "features"), _route(3, 1500, "architecture")]
+
+
+def _answer(choice="route_1", confidence=0.67, probabilities=None):
+    probabilities = {"route_1": 0.78, "route_2": 0.22, "route_3": 0} if probabilities is None else probabilities
+    body = {"answers": {"route": {"choice": choice, "confidence": confidence, "probabilities": probabilities}}}
+    return 200, json.dumps(body).encode()
+
+
+class FakeTransport:
+    def __init__(self, response=None, error=None):
+        self.response, self.error, self.requests = response or _answer(), error, []
+
+    def __call__(self, request):
+        self.requests.append(request)
+        if self.error:
+            raise self.error
+        return self.response
+
+
+class JevDeciderTest(unittest.TestCase):
+    def decide(self, transport, routes=THREE):
+        return JevDecider("test-key", transport).decide("fix the typo", routes)
+
+    def test_request_shape(self):
+        transport = FakeTransport()
+        self.decide(transport)
+        (request,) = transport.requests
+        self.assertEqual(request.full_url, JEV_URL)
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        body = json.loads(request.data)
+        self.assertEqual(body["model"], JEV_MODEL)
+        self.assertEqual(body["state"], {"task": "fix the typo"})
+        (question,) = body["questions"].values()
+        self.assertEqual(question["type"], "choice")
+        self.assertEqual(sorted(question["criteria"].values()), ["architecture", "features", "typo fixes"])
+        self.assertEqual(len(question["criteria"]), 3)
+
+    def test_option_keys_are_unique_when_names_share(self):
+        transport = FakeTransport()
+        self.decide(transport, [dict(r, name="same") for r in THREE])
+        (question,) = json.loads(transport.requests[0].data)["questions"].values()
+        self.assertEqual(len(question["criteria"]), 3)
+
+    def test_canned_answer_becomes_thousandths(self):
+        decision = self.decide(FakeTransport())
+        self.assertEqual(decision.pick, 1)
+        self.assertEqual(decision.confidence, 670)
+        self.assertEqual(dict(decision.probabilities), {1: 780, 2: 220, 3: 0})
+        self.assertEqual(decision.decider, "jev")
+
+    def test_probabilities_are_normalised_to_1000(self):
+        third = {"route_1": 0.3333, "route_2": 0.3333, "route_3": 0.3333}
+        decision = self.decide(FakeTransport(_answer(probabilities=third)))
+        self.assertEqual(sum(decision.probabilities.values()), 1000)
+        self.assertEqual(decision.decider, "jev")
+
+    def assert_falls_back(self, transport):
+        decision = self.decide(transport)
+        self.assertEqual(decision.decider, "offline")
+        self.assertEqual(sum(decision.probabilities.values()), 1000)
+
+    def test_url_error_falls_back(self):
+        self.assert_falls_back(FakeTransport(error=urllib.error.URLError("down")))
+
+    def test_timeout_falls_back(self):
+        self.assert_falls_back(FakeTransport(error=socket.timeout("slow")))
+
+    def test_non_200_falls_back(self):
+        self.assert_falls_back(FakeTransport((500, b"{}")))
+
+    def test_invalid_json_falls_back(self):
+        self.assert_falls_back(FakeTransport((200, b"not json")))
+
+    def test_missing_route_in_probabilities_falls_back(self):
+        self.assert_falls_back(FakeTransport(_answer(probabilities={"route_1": 0.5, "route_2": 0.5})))
+
+    def test_unknown_choice_falls_back(self):
+        self.assert_falls_back(FakeTransport(_answer(choice="nope")))
+
+    def test_out_of_range_probability_falls_back(self):
+        self.assert_falls_back(FakeTransport(_answer(probabilities={"route_1": 2, "route_2": 0, "route_3": 0})))
+
+    def test_all_zero_probabilities_fall_back(self):
+        self.assert_falls_back(FakeTransport(_answer(probabilities={"route_1": 0, "route_2": 0, "route_3": 0})))
 
 
 if __name__ == "__main__":

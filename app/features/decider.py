@@ -6,10 +6,12 @@ thousandths (0..1000) and the probabilities sum to exactly 1000.
 
 from __future__ import annotations
 
+import json
 import re
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 THOUSAND = 1000
 
@@ -96,5 +98,85 @@ class OfflineDecider(Decider):
             pick=ordered[0],
             probabilities=probabilities,
             confidence=probabilities[ordered[0]] - runner_up,
+            decider=self.name,
+        )
+
+
+JEV_URL = "https://openrouter.ai/api/alpha/decisions"
+JEV_MODEL = "typesafe/jev-1.13"
+_JEV_TIMEOUT_SECONDS = 10
+_MICRO = 1_000_000
+
+# Sends a prepared request and returns (HTTP status, response body).
+Transport = Callable[[urllib.request.Request], tuple[int, bytes]]
+
+
+def urllib_transport(request: urllib.request.Request) -> tuple[int, bytes]:
+    with urllib.request.urlopen(request, timeout=_JEV_TIMEOUT_SECONDS) as response:
+        return response.status, response.read()
+
+
+def _option_key(route_id: int) -> str:
+    return f"route_{route_id}"
+
+
+def _fraction(value: object) -> float:
+    """A JSON number within 0..1, else ValueError."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError(f"expected a number between 0 and 1, got {value!r}")
+    return float(value)
+
+
+class JevDecider(Decider):
+    """Asks Jev on OpenRouter one `choice` question whose options are the routes. Any
+    failure (network, HTTP status, malformed answer) is answered by the OfflineDecider
+    instead, so a decision is always made."""
+
+    name = "jev"
+
+    def __init__(self, api_key: str, transport: Transport = urllib_transport) -> None:
+        self._api_key = api_key
+        self._transport = transport
+        self._fallback = OfflineDecider()
+
+    def decide(self, task: str, routes: Sequence[Mapping]) -> Decision:
+        if not routes:
+            raise ValueError("decide() needs at least one route")
+        try:
+            return self._ask(task, routes)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # OSError covers URLError, HTTPError and timeouts; ValueError covers bad JSON.
+            return self._fallback.decide(task, routes)
+
+    def _ask(self, task: str, routes: Sequence[Mapping]) -> Decision:
+        body = {
+            "model": JEV_MODEL,
+            "state": {"task": task},
+            "questions": {
+                "route": {
+                    "type": "choice",
+                    "instructions": "Which route should handle this coding task?",
+                    "criteria": {_option_key(r["id"]): r["criteria"] for r in routes},
+                }
+            },
+        }
+        request = urllib.request.Request(
+            JEV_URL,
+            data=json.dumps(body).encode(),
+            headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        status, payload = self._transport(request)
+        if status != 200:
+            raise ValueError(f"unexpected HTTP status {status}")
+        answer = json.loads(payload)["answers"]["route"]
+        keys = {_option_key(r["id"]): r["id"] for r in routes}
+        weights = {rid: round(_fraction(answer["probabilities"][key]) * _MICRO) for key, rid in keys.items()}
+        if not sum(weights.values()):
+            raise ValueError("all probabilities are zero")
+        return Decision(
+            pick=keys[answer["choice"]],
+            probabilities=_to_thousandths(weights),
+            confidence=round(_fraction(answer["confidence"]) * THOUSAND),
             decider=self.name,
         )
