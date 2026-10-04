@@ -188,3 +188,65 @@ class IntegrationsTest(AppTestCase):
             self.assertNotIn("sk-secret-value", self.page())
         finally:
             del os.environ["OPENROUTER_API_KEY"]
+
+    def run_hook(self, jev_url: str, prompt: str = "rename a variable"):
+        import json
+        import os
+        import subprocess
+        import tempfile
+        from app.features.decider import JEV_URL
+        self.add(CHEAP, STRONG)
+        hook = self.snippets()[2].replace(repr(JEV_URL), repr(jev_url))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "route_hook.py")
+            with open(path, "w") as handle:
+                handle.write(hook)
+            return subprocess.run(
+                [sys.executable, path], input=json.dumps({"prompt": prompt}), capture_output=True,
+                text=True, timeout=30, env={**os.environ, "OPENROUTER_API_KEY": "x"},
+            )
+
+    def test_hook_prints_claude_code_context_for_jev_choice(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        seen = []
+
+        class Stub(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                reply = json.dumps({"answers": {"route": {"choice": "route_2"}}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Stub)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            result = self.run_hook(f"http://127.0.0.1:{server.server_port}/", "redesign the module layout")
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "UserPromptSubmit")
+        self.assertIn("strong", output["additionalContext"])
+        self.assertIn("anthropic/claude-opus-4.5", output["additionalContext"])
+        question = seen[0]["questions"]["route"]
+        self.assertEqual(seen[0]["state"], {"task": "redesign the module layout"})
+        self.assertEqual(question["type"], "choice")
+        self.assertEqual(list(question["criteria"]), ["route_1", "route_2"])
+
+    def test_hook_fails_soft_when_jev_is_unreachable(self):
+        import socket
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        result = self.run_hook(f"http://127.0.0.1:{port}/")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("route_hook: Jev failed", result.stderr)
