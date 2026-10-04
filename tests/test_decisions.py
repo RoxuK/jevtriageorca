@@ -8,6 +8,8 @@ from tests.support import AppTestCase
 class DecisionLogTest(AppTestCase):
     def setUp(self) -> None:
         self.get("/decisions")  # make sure migrations have run
+        self.sql("DELETE FROM decision_labels")
+        self.sql("DELETE FROM routes")
         self.sql("DELETE FROM decision_probabilities")
         self.sql("DELETE FROM decisions")
 
@@ -80,3 +82,104 @@ class DecisionLogTest(AppTestCase):
     def test_post_is_not_allowed(self):
         status, _, _ = self.post_form("/decisions", {})
         self.assertIn(status, (404, 405))
+
+    def labels(self, decision_id: int) -> list:
+        conn = sqlite3.connect(os.environ["APP_DATABASE"])
+        try:
+            return conn.execute(
+                "SELECT verdict, correct_route_id FROM decision_labels WHERE decision_id = ?", (decision_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def add_route(self, name: str) -> int:
+        self.post_form("/routes", {"name": name, "criteria": "x", "target_model": "m", "price_cents": "1"})
+        conn = sqlite3.connect(os.environ["APP_DATABASE"])
+        try:
+            return conn.execute("SELECT id FROM routes WHERE name = ?", (name,)).fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_row_renders_label_form(self):
+        did = self.add()
+        self.add_route("pricey")
+        _, _, body = self.get("/decisions")
+        self.assertIn(f'<form method="post" action="/decisions/{did}/label">', body)
+        self.assertIn('<select name="verdict"><option value="right">right</option>', body)
+        self.assertIn('<option value="wrong">wrong</option>', body)
+        self.assertIn('<select name="correct_route_id">', body)
+        self.assertIn(">pricey</option>", body)
+        self.assertIn("Unlabelled", body)
+
+    def test_right_redirects_and_row_shows_right(self):
+        did = self.add()
+        status, headers, _ = self.post_form(f"/decisions/{did}/label", {"verdict": "right"})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/decisions")
+        _, _, body = self.get("/decisions")
+        self.assertIn("Labelled right", body)
+
+    def test_wrong_with_route_shows_correct_route(self):
+        did = self.add()
+        rid = self.add_route("pricey")
+        status, _, _ = self.post_form(f"/decisions/{did}/label", {"verdict": "wrong", "correct_route_id": str(rid)})
+        self.assertEqual(status, 303)
+        _, _, body = self.get("/decisions")
+        self.assertIn("Labelled wrong: should be pricey", body)
+
+    def test_relabel_replaces_single_label(self):
+        did = self.add()
+        rid = self.add_route("pricey")
+        self.post_form(f"/decisions/{did}/label", {"verdict": "wrong", "correct_route_id": str(rid)})
+        self.post_form(f"/decisions/{did}/label", {"verdict": "right"})
+        self.assertEqual([tuple(r) for r in self.labels(did)], [("right", None)])
+        _, _, body = self.get("/decisions")
+        self.assertIn("Labelled right", body)
+        self.assertNotIn("Labelled wrong", body)
+
+    def assert_rejected(self, did: int, data: dict) -> None:
+        status, _, body = self.post_form(f"/decisions/{did}/label", data)
+        self.assertEqual(status, 400)
+        self.assertIn('class="error"', body)
+        self.assertEqual(self.labels(did), [])
+
+    def test_wrong_without_route_is_400(self):
+        self.assert_rejected(self.add(), {"verdict": "wrong"})
+
+    def test_wrong_with_blank_route_is_400(self):
+        self.assert_rejected(self.add(), {"verdict": "wrong", "correct_route_id": ""})
+
+    def test_wrong_with_non_numeric_route_is_400(self):
+        self.assert_rejected(self.add(), {"verdict": "wrong", "correct_route_id": "abc"})
+
+    def test_wrong_with_unknown_route_is_400(self):
+        self.assert_rejected(self.add(), {"verdict": "wrong", "correct_route_id": "999999"})
+
+    def test_missing_verdict_is_400(self):
+        self.assert_rejected(self.add(), {})
+
+    def test_invalid_verdict_is_400(self):
+        self.assert_rejected(self.add(), {"verdict": "maybe"})
+
+    def test_non_numeric_decision_id_is_404(self):
+        status, _, _ = self.post_form("/decisions/abc/label", {"verdict": "right"})
+        self.assertEqual(status, 404)
+
+    def test_unknown_decision_id_is_404_and_stores_nothing(self):
+        status, _, _ = self.post_form("/decisions/999999/label", {"verdict": "right"})
+        self.assertEqual(status, 404)
+        self.assertEqual(self.labels(999999), [])
+
+    def test_oversized_decision_id_is_404(self):
+        status, _, _ = self.post_form("/decisions/" + "9" * 40 + "/label", {"verdict": "right"})
+        self.assertEqual(status, 404)
+
+    def test_labelling_newest_leaves_others_unlabelled(self):
+        first, second, third = self.add(task="a"), self.add(task="b"), self.add(task="c")
+        self.post_form(f"/decisions/{third}/label", {"verdict": "right"})
+        self.assertEqual(len(self.labels(third)), 1)
+        self.assertEqual(self.labels(first), [])
+        self.assertEqual(self.labels(second), [])
+        _, _, body = self.get("/decisions")
+        self.assertEqual(body.count("Labelled right"), 1)
+        self.assertEqual(body.count("Unlabelled"), 2)
