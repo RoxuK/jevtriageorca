@@ -6,6 +6,7 @@ thousandths (0..1000) and the probabilities sum to exactly 1000.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.request
@@ -144,8 +145,9 @@ class JevDecider(Decider):
             raise ValueError("decide() needs at least one route")
         try:
             return self._ask(task, routes)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            # OSError covers URLError, HTTPError and timeouts; ValueError covers bad JSON.
+        except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, AttributeError):
+            # OSError covers URLError, HTTPError and timeouts; HTTPException covers truncated
+            # or malformed responses; ValueError covers bad JSON.
             return self._fallback.decide(task, routes)
 
     def _ask(self, task: str, routes: Sequence[Mapping]) -> Decision:

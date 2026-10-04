@@ -1,5 +1,6 @@
 import json
 import socket
+import http.client
 import unittest
 import urllib.error
 
@@ -173,6 +174,9 @@ class JevDeciderTest(unittest.TestCase):
 
     def test_timeout_falls_back(self):
         self.assert_falls_back(FakeTransport(error=socket.timeout("slow")))
+
+    def test_truncated_response_falls_back(self):
+        self.assert_falls_back(FakeTransport(error=http.client.IncompleteRead(b"{")))
 
     def test_non_200_falls_back(self):
         self.assert_falls_back(FakeTransport((500, b"{}")))
