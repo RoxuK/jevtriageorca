@@ -114,6 +114,14 @@ class ThresholdsTest(AppTestCase):
         self.assertEqual(headers["Location"], "/thresholds")
         self.assertIn("Escalated: no", self.decision_page(MIXED))
 
+    def test_raising_share_threshold_stops_escalation(self):
+        self.add_routes(CHEAP, STRONG)
+        self.assertIn("Escalated: yes", self.decision_page(MIXED))
+        status, _, _ = self.post_form(
+            "/thresholds", {"confidence_threshold": "1", "share_threshold": "1"})
+        self.assertEqual(status, 303)
+        self.assertIn("Escalated: no", self.decision_page(MIXED))
+
     def test_saved_values_show_in_form(self):
         self.post_form("/thresholds", {"confidence_threshold": "0.123", "share_threshold": "1"})
         self.assertEqual(self.stored_thresholds(), (123, 1000))
