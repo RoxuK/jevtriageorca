@@ -148,10 +148,12 @@ class RoutesTest(AppTestCase):
     def test_edit_valid_redirects_and_updates_keeping_id(self):
         rid = self.add(CHEAP)
         other = self.add(STRONG)
+        before = self.rows()
         status, headers, _ = self.post_form(f"/routes/{rid}/edit", dict(STRONG, name="renamed"))
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], "/routes")
         self.assertEqual(self.rows()[0], (rid, "renamed", STRONG["criteria"], STRONG["target_model"], 1500))
+        self.assertEqual(self.rows()[1], before[1])
         self.assertEqual(self.rows()[1][0], other)
         self.assertIn("renamed", self.get("/routes")[2])
 
