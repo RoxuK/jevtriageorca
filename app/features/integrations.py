@@ -3,6 +3,8 @@ thresholds. The app only shows the text; it never runs, writes or installs it.""
 
 from __future__ import annotations
 
+import json
+
 from app.features.decider import JEV_MODEL, JEV_URL
 from app.features.routes import _list_routes
 from app.features.thresholds import Thresholds, load_thresholds
@@ -12,6 +14,7 @@ from app.web import Request, Response, h, html_response, route
 NAV.append(("/integrations", "Integrations"))
 
 PROXY_FILE = "route_proxy.py"
+HOOK_FILE = "route_hook.py"
 PROXY_PORT = 8787
 UPSTREAM_BASE_URL = "https://openrouter.ai/api"
 
@@ -125,12 +128,85 @@ if __name__ == "__main__":
 '''
 
 
+_HOOK_TEMPLATE = '''\
+"""UserPromptSubmit hook: asks Jev which route fits the prompt and adds the answer to the
+context of the Claude Code session. Standard library only.
+Needs the OPENROUTER_API_KEY environment variable."""
+
+import json
+import os
+import sys
+import urllib.request
+
+JEV_URL = @JEV_URL@
+JEV_MODEL = @JEV_MODEL@
+# (id, name, criteria, target model, price in cents per million tokens)
+ROUTES = [
+@ROUTES@
+]
+
+
+def main():
+    prompt = str(json.load(sys.stdin).get("prompt", ""))
+    question = {
+        "type": "choice",
+        "instructions": "Which route should handle this coding task?",
+        "criteria": {"route_%d" % r[0]: r[2] for r in ROUTES},
+    }
+    payload = {"model": JEV_MODEL, "state": {"task": prompt}, "questions": {"route": question}}
+    request = urllib.request.Request(
+        JEV_URL,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"],
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            chosen = int(json.loads(response.read())["answers"]["route"]["choice"].split("_", 1)[1])
+        route = next(r for r in ROUTES if r[0] == chosen)
+    except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as err:
+        print("route_hook: Jev failed (%s: %s)" % (type(err).__name__, err), file=sys.stderr)
+        return
+    note = "Jev suggests route %s (model %s) for this task." % (route[1], route[3])
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": note}}))
+
+
+main()
+'''
+
+
+def _route_lines(routes) -> str:
+    return "".join(
+        f"    {(r['id'], r['name'], r['criteria'], r['target_model'], r['price_cents'])!r},\n" for r in routes
+    ).rstrip("\n")
+
+
+def generate_hook(routes) -> str:
+    """The text of route_hook.py; stored values are embedded with repr(), as in generate_proxy."""
+    text = _HOOK_TEMPLATE
+    for placeholder, value in (("@JEV_URL@", repr(JEV_URL)), ("@JEV_MODEL@", repr(JEV_MODEL)), ("@ROUTES@", _route_lines(routes))):
+        text = text.replace(placeholder, value)
+    return text
+
+
+def settings_env_snippet() -> str:
+    """settings.json env block pointing Claude Code at the local proxy; carries no key value."""
+    env = {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{PROXY_PORT}"}
+    return json.dumps({"env": env}, indent=2)
+
+
+def settings_hook_snippet() -> str:
+    command = f"python3 {HOOK_FILE}"
+    hooks = {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": command}]}]}
+    return json.dumps({"hooks": hooks}, indent=2)
+
+
 def generate_proxy(routes, thresholds: Thresholds) -> str:
     """The text of route_proxy.py. Every stored value is embedded with repr(), so no route
     text can change the structure of the program."""
-    route_lines = "".join(
-        f"    {(r['id'], r['name'], r['criteria'], r['target_model'], r['price_cents'])!r},\n" for r in routes
-    )
     replacements = {
         "@PORT@": repr(PROXY_PORT),
         "@UPSTREAM@": repr(UPSTREAM_BASE_URL),
@@ -138,7 +214,7 @@ def generate_proxy(routes, thresholds: Thresholds) -> str:
         "@JEV_MODEL@": repr(JEV_MODEL),
         "@CONFIDENCE@": repr(thresholds.confidence),
         "@SHARE@": repr(thresholds.share),
-        "@ROUTES@": route_lines.rstrip("\n"),
+        "@ROUTES@": _route_lines(routes),
     }
     text = _PROXY_TEMPLATE
     # @ROUTES@ comes last so route text is never scanned for placeholders.
@@ -153,8 +229,40 @@ def integrations_index(req: Request) -> Response:
         "<h1>Integrations</h1>"
         '<div class="card"><h2><a href="/integrations/proxy">CLI</a></h2>'
         f'<p class="muted">The generated {h(PROXY_FILE)} route proxy.</p></div>'
+        '<div class="card"><h2><a href="/integrations/claude-code">CLI: Claude Code</a></h2>'
+        '<p class="muted">Settings, an optional hook and the proxy for Claude Code.</p></div>'
     )
     return html_response(page("Integrations", body))
+
+
+HOOK_LIMIT_NOTE = "Hooks cannot switch the model; routing needs the proxy."
+
+
+def _snippet(label: str, text: str) -> str:
+    return f'<div class="card"><h2>{h(label)}</h2><pre>{h(text)}</pre></div>'
+
+
+@route("GET", "/integrations/claude-code")
+def integrations_claude_code(req: Request) -> Response:
+    routes = _list_routes()
+    if routes:
+        content = (
+            _snippet("CLI: settings.json env", settings_env_snippet())
+            + _snippet(f"CLI: optional settings.json hook for {HOOK_FILE}", settings_hook_snippet())
+            + _snippet(f"CLI: {HOOK_FILE}", generate_hook(routes))
+            + _snippet(f"CLI: {PROXY_FILE}", generate_proxy(routes, load_thresholds()))
+        )
+    else:
+        content = '<p class="muted">Routes are needed first: <a href="/routes">add routes</a>.</p>'
+    body = (
+        "<h1>Claude Code</h1>"
+        f'<p class="muted">Run {h(PROXY_FILE)} yourself and merge the settings into your settings.json. '
+        "Set OPENROUTER_API_KEY in your own environment; it is never part of these snippets. "
+        "This app only shows the text; it does not run or install it.</p>"
+        f'<p class="muted">{h(HOOK_LIMIT_NOTE)}</p>'
+        f"{content}"
+    )
+    return html_response(page("Claude Code", body))
 
 
 @route("GET", "/integrations/proxy")

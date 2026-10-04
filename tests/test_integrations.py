@@ -130,3 +130,129 @@ class IntegrationsTest(AppTestCase):
         self.assertIn("Routes are needed", body)
         self.assertIn('href="/routes"', body)
         self.assertNotIn("<pre>", body)
+
+    def page(self) -> str:
+        status, _, body = self.get("/integrations/claude-code")
+        self.assertEqual(status, 200)
+        return body
+
+    def snippets(self) -> list:
+        return [html.unescape(m) for m in re.findall(r"<pre>(.*?)</pre>", self.page(), re.S)]
+
+    def test_index_links_to_claude_code(self):
+        self.assertIn('href="/integrations/claude-code"', self.get("/integrations")[2])
+
+    def test_states_hooks_cannot_switch_the_model(self):
+        sentence = "Hooks cannot switch the model; routing needs the proxy."
+        self.assertIn(sentence, self.page())
+        self.add(CHEAP)
+        self.assertIn(sentence, self.page())
+
+    def test_without_routes_asks_for_routes(self):
+        body = self.page()
+        self.assertIn('href="/routes"', body)
+        self.assertNotIn("<pre>", body)
+
+    def test_four_labelled_snippets_with_cli_labels(self):
+        self.add(CHEAP)
+        body = self.page()
+        self.assertEqual(len(self.snippets()), 4)
+        self.assertEqual(body.count("<h2>CLI: "), 4)
+        self.assertIn("does not run or install it", body)
+
+    def test_env_and_hook_settings_are_valid_json(self):
+        import json
+        self.add(CHEAP)
+        env, hook, _, _ = self.snippets()
+        self.assertEqual(json.loads(env)["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8787")
+        command = json.loads(hook)["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        self.assertIn("route_hook.py", command)
+
+    def test_generated_scripts_parse_and_embed_routes(self):
+        self.add(CHEAP, NASTY)
+        _, _, hook, proxy = self.snippets()
+        for text in (hook, proxy):
+            tree = ast.parse(text)
+            routes = next(
+                ast.literal_eval(n.value) for n in tree.body
+                if isinstance(n, ast.Assign) and n.targets[0].id == "ROUTES"
+            )
+            self.assertEqual([r[1] for r in routes], ["cheap", NASTY["name"]])
+            self.assertEqual(routes[1][2], NASTY["criteria"])
+
+    def test_hostile_route_text_is_escaped(self):
+        self.add(HOSTILE)
+        body = self.page()
+        self.assertNotIn("<script>alert(1)</script>", body)
+        self.assertNotIn("<img", body)
+
+    def test_api_key_value_never_appears(self):
+        import os
+        os.environ["OPENROUTER_API_KEY"] = "sk-secret-value"
+        try:
+            self.add(CHEAP)
+            self.assertNotIn("sk-secret-value", self.page())
+        finally:
+            del os.environ["OPENROUTER_API_KEY"]
+
+    def run_hook(self, jev_url: str, prompt: str = "rename a variable"):
+        import json
+        import os
+        import subprocess
+        import tempfile
+        from app.features.decider import JEV_URL
+        self.add(CHEAP, STRONG)
+        hook = self.snippets()[2].replace(repr(JEV_URL), repr(jev_url))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "route_hook.py")
+            with open(path, "w") as handle:
+                handle.write(hook)
+            return subprocess.run(
+                [sys.executable, path], input=json.dumps({"prompt": prompt}), capture_output=True,
+                text=True, timeout=30, env={**os.environ, "OPENROUTER_API_KEY": "x"},
+            )
+
+    def test_hook_prints_claude_code_context_for_jev_choice(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        seen = []
+
+        class Stub(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                reply = json.dumps({"answers": {"route": {"choice": "route_2"}}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Stub)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            result = self.run_hook(f"http://127.0.0.1:{server.server_port}/", "redesign the module layout")
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "UserPromptSubmit")
+        self.assertIn("strong", output["additionalContext"])
+        self.assertIn("anthropic/claude-opus-4.5", output["additionalContext"])
+        question = seen[0]["questions"]["route"]
+        self.assertEqual(seen[0]["state"], {"task": "redesign the module layout"})
+        self.assertEqual(question["type"], "choice")
+        self.assertEqual(list(question["criteria"]), ["route_1", "route_2"])
+
+    def test_hook_fails_soft_when_jev_is_unreachable(self):
+        import socket
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        result = self.run_hook(f"http://127.0.0.1:{port}/")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("route_hook: Jev failed", result.stderr)
