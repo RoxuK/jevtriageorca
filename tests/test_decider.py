@@ -62,6 +62,21 @@ class OfflineDeciderTest(unittest.TestCase):
         self.assertLess(d.confidence, 500)
         self.assertGreaterEqual(d.probabilities[2], 200)
 
+    def test_confidence_is_the_margin_between_top_two_probabilities(self):
+        d = decide("fix the typo in the README title")
+        top, runner_up = sorted(d.probabilities.values(), reverse=True)
+        self.assertEqual(d.confidence, top - runner_up)
+
+    def test_clear_strong_task_has_high_confidence(self):
+        d = decide("redesign the storage architecture and hard debugging")
+        self.assertGreaterEqual(d.confidence, 200)
+
+    def test_strong_keyword_task_picks_strong_route(self):
+        self.assertEqual(decide("Architecture refactors across files").pick, 2)
+
+    def test_matching_ignores_case_and_plurals(self):
+        self.assertEqual(decide("TYPOS").pick, 1)
+
     def test_task_sharing_no_word_is_valid(self):
         self.assert_valid(decide("zzz"), TWO)
 
