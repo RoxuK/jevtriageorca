@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from app import db
 from app.features.decider import THOUSAND, Decider, Decision, OfflineDecider
+from app.features.thresholds import apply_escalation, load_thresholds
 from app.layout import NAV, page
 from app.web import Request, Response, h, html_response, redirect, route
 
@@ -27,6 +28,10 @@ db.migration(
     "route_name TEXT NOT NULL, probability INTEGER NOT NULL, "
     "PRIMARY KEY (decision_id, route_id))",
 )
+db.migration(
+    "tester_003_decisions_escalated",
+    "ALTER TABLE decisions ADD COLUMN escalated INTEGER NOT NULL DEFAULT 0",
+)
 NAV.append(("/tester", "Tester"))
 
 _MAX_ID = 2**63 - 1  # SQLite INTEGER ceiling
@@ -42,16 +47,17 @@ def _load_routes() -> list:
         conn.close()
 
 
-def _save_decision(task: str, routes: list, decision: Decision) -> int:
+def _save_decision(task: str, routes: list, decision: Decision, pick: int, escalated: bool) -> int:
     names = {r["id"]: r["name"] for r in routes}
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn = db.connect()
     try:
         with conn:
             cursor = conn.execute(
-                "INSERT INTO decisions (task, chosen_route_id, chosen_route_name, confidence, decider, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (task, decision.pick, names[decision.pick], decision.confidence, decision.decider, created_at),
+                "INSERT INTO decisions "
+                "(task, chosen_route_id, chosen_route_name, confidence, decider, created_at, escalated) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (task, pick, names[pick], decision.confidence, decision.decider, created_at, int(escalated)),
             )
             conn.executemany(
                 "INSERT INTO decision_probabilities (decision_id, route_id, route_name, probability) "
@@ -70,7 +76,7 @@ def _find_decision(raw_id: str):
     conn = db.connect()
     try:
         decision = conn.execute(
-            "SELECT id, task, chosen_route_name, confidence, decider, created_at FROM decisions WHERE id = ?",
+            "SELECT id, task, chosen_route_name, confidence, decider, created_at, escalated FROM decisions WHERE id = ?",
             (int(raw_id),),
         ).fetchone()
         if decision is None:
@@ -105,6 +111,7 @@ def _render_tester(task: str = "", error: str = "", status: int = 200) -> Respon
         f'<form method="post" action="/tester">{message}'
         f'<label>Coding task<textarea name="task" rows="6">{h(task)}</textarea></label>'
         '<button type="submit">Decide route</button></form>'
+        '<p><a href="/thresholds">Edit escalation thresholds</a></p>'
     )
     return html_response(page("Tester", f'<h1>Tester</h1><div class="card">{form}</div>'), status)
 
@@ -123,7 +130,8 @@ def decide_task(req: Request) -> Response:
     if not task:
         return _render_tester(task, "Task is required.", 400)
     decision = _DECIDER.decide(task, routes)
-    return redirect(f"/decisions/{_save_decision(task, routes, decision)}")
+    pick, escalated = apply_escalation(decision, routes, load_thresholds())
+    return redirect(f"/decisions/{_save_decision(task, routes, decision, pick, escalated)}")
 
 
 @route("GET", "/decisions/{decision_id}")
@@ -141,6 +149,7 @@ def show_decision(req: Request) -> Response:
         f'<div class="card"><h2>Task</h2><p>{h(decision["task"])}</p>'
         f'<p>Chosen route: <strong>{h(decision["chosen_route_name"])}</strong></p>'
         f'<p>Confidence: {_thousandths(decision["confidence"])}</p>'
+        f'<p>Escalated: {"yes" if decision["escalated"] else "no"}</p>'
         f'<p>Decider: {h(decision["decider"])}</p>'
         f'<p class="muted">Decided at {h(decision["created_at"])}</p></div>'
         '<div class="card"><table><thead><tr><th>Route</th><th>Probability</th></tr></thead>'
