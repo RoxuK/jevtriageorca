@@ -10,7 +10,15 @@ import os
 from datetime import datetime, timezone
 
 from app import db
-from app.features.decider import THOUSAND, Decider, Decision, JevDecider, OfflineDecider, Transport, urllib_transport
+from app.features.decider import (
+    Decider,
+    Decision,
+    JevDecider,
+    OfflineDecider,
+    Transport,
+    format_thousandths,
+    urllib_transport,
+)
 from app.features.thresholds import apply_escalation, load_thresholds
 from app.layout import NAV, page
 from app.web import Request, Response, h, html_response, redirect, route
@@ -98,10 +106,6 @@ def _find_decision(raw_id: str):
         conn.close()
 
 
-def _thousandths(value: int) -> str:
-    return f"{value // THOUSAND}.{value % THOUSAND:03d}"
-
-
 def _too_few_routes(routes: list) -> bool:
     return len(routes) < 2
 
@@ -149,14 +153,14 @@ def show_decision(req: Request) -> Response:
         return html_response(page("Not found", "<h1>Decision not found</h1>"), 404)
     decision, probabilities = found
     rows = "".join(
-        f"<tr><td>{h(p['route_name'])}</td><td>{_thousandths(p['probability'])}</td></tr>"
+        f"<tr><td>{h(p['route_name'])}</td><td>{format_thousandths(p['probability'])}</td></tr>"
         for p in probabilities
     )
     body = (
         "<h1>Decision</h1>"
         f'<div class="card"><h2>Task</h2><p>{h(decision["task"])}</p>'
         f'<p>Chosen route: <strong>{h(decision["chosen_route_name"])}</strong></p>'
-        f'<p>Confidence: {_thousandths(decision["confidence"])}</p>'
+        f'<p>Confidence: {format_thousandths(decision["confidence"])}</p>'
         f'<p>Escalated: {"yes" if decision["escalated"] else "no"}</p>'
         f'<p>Decider: {h(decision["decider"])}</p>'
         f'<p class="muted">Decided at {h(decision["created_at"])}</p></div>'

@@ -62,6 +62,10 @@ def _price_ranks(routes: Sequence[Mapping]) -> dict[int, int]:
     return {r["id"]: prices.index(r["price_cents"]) for r in routes}
 
 
+def format_thousandths(value: int) -> str:
+    return f"{value // THOUSAND}.{value % THOUSAND:03d}"
+
+
 def _to_thousandths(weights: Mapping[int, int]) -> dict[int, int]:
     """Scale positive weights to integers summing to 1000; the remainder goes to the
     largest fractional parts, lowest route id first."""
