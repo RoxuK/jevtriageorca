@@ -117,6 +117,104 @@ class RoutesTest(AppTestCase):
         self.assertEqual(status, 400)
         self.assertNotIn("<script>", body)
 
+    def rows(self) -> list[tuple]:
+        conn = sqlite3.connect(os.environ["APP_DATABASE"])
+        try:
+            return conn.execute(
+                "SELECT id, name, criteria, target_model, price_cents FROM routes ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def add(self, fields: dict[str, str]) -> int:
+        self.post_form("/routes", fields)
+        return self.rows()[-1][0]
+
+    def test_list_has_edit_link_and_delete_form_per_row(self):
+        first, second = self.add(CHEAP), self.add(STRONG)
+        _, _, body = self.get("/routes")
+        for rid in (first, second):
+            self.assertIn(f'<a href="/routes/{rid}/edit">Edit</a>', body)
+            self.assertIn(f'<form method="post" action="/routes/{rid}/delete">', body)
+
+    def test_edit_form_prefilled_with_stored_values(self):
+        rid = self.add(CHEAP)
+        status, _, body = self.get(f"/routes/{rid}/edit")
+        self.assertEqual(status, 200)
+        self.assertIn(f'action="/routes/{rid}/edit"', body)
+        for key, value in CHEAP.items():
+            self.assertIn(f'name="{key}" value="{value}"', body)
+
+    def test_edit_valid_redirects_and_updates_keeping_id(self):
+        rid = self.add(CHEAP)
+        other = self.add(STRONG)
+        before = self.rows()
+        status, headers, _ = self.post_form(f"/routes/{rid}/edit", dict(STRONG, name="renamed"))
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/routes")
+        self.assertEqual(self.rows()[0], (rid, "renamed", STRONG["criteria"], STRONG["target_model"], 1500))
+        self.assertEqual(self.rows()[1], before[1])
+        self.assertEqual(self.rows()[1][0], other)
+        self.assertIn("renamed", self.get("/routes")[2])
+
+    def test_edit_invalid_rejected_and_route_unchanged(self):
+        rid = self.add(CHEAP)
+        before = self.rows()
+        bad = [dict(STRONG, name=""), dict(STRONG, criteria=""), dict(STRONG, target_model=""),
+               dict(STRONG, price_cents="abc"), {}]
+        for fields in bad:
+            with self.subTest(fields=fields):
+                status, _, body = self.post_form(f"/routes/{rid}/edit", fields)
+                self.assertEqual(status, 400)
+                self.assertIn('class="error"', body)
+                self.assertIn(f'action="/routes/{rid}/edit"', body)
+                self.assertEqual(self.rows(), before)
+
+    def test_edit_error_names_the_missing_field(self):
+        rid = self.add(CHEAP)
+        _, _, body = self.post_form(f"/routes/{rid}/edit", dict(STRONG, name=""))
+        self.assertIn('class="error" role="alert">Name is required.', body)
+        self.assertIn(f'name="criteria" value="{STRONG["criteria"]}"', body)
+
+    def test_delete_redirects_and_leaves_other_routes(self):
+        first, second = self.add(CHEAP), self.add(STRONG)
+        before = self.rows()
+        status, headers, _ = self.post_form(f"/routes/{first}/delete", {})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/routes")
+        self.assertEqual(self.rows(), [r for r in before if r[0] == second])
+        self.assertNotIn(CHEAP["name"], self.get("/routes")[2])
+
+    def test_unknown_id_is_404(self):
+        for method, path in (("GET", "/routes/999999/edit"), ("POST", "/routes/999999/edit"),
+                             ("POST", "/routes/999999/delete")):
+            with self.subTest(path=path, method=method):
+                if method == "GET":
+                    status = self.get(path)[0]
+                else:
+                    status = self.post_form(path, CHEAP)[0]
+                self.assertEqual(status, 404)
+
+    def test_non_numeric_id_is_404_not_500(self):
+        for rid in ("abc", "-1", "1.5", "9" * 5000):
+            for method, suffix in (("GET", "edit"), ("POST", "edit"), ("POST", "delete")):
+                with self.subTest(id=rid[:10], method=method, suffix=suffix):
+                    path = f"/routes/{rid}/{suffix}"
+                    status = self.get(path)[0] if method == "GET" else self.post_form(path, CHEAP)[0]
+                    self.assertEqual(status, 404)
+
+    def test_edit_form_escapes_hostile_values(self):
+        rid = self.add(dict(CHEAP, name="<script>alert(1)</script>", criteria='"><img src=x>'))
+        _, _, body = self.get(f"/routes/{rid}/edit")
+        self.assertIn("&lt;script&gt;", body)
+        self.assertNotIn("<script>", body)
+        self.assertNotIn("<img", body)
+
+    def test_edit_error_rerender_escapes_hostile_values(self):
+        rid = self.add(CHEAP)
+        _, _, body = self.post_form(f"/routes/{rid}/edit", dict(CHEAP, name="<script>x</script>", price_cents="abc"))
+        self.assertNotIn("<script>", body)
+
 
 if __name__ == "__main__":
     unittest.main()
