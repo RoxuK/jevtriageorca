@@ -290,11 +290,16 @@ def _snippet(label: str, title: str, text: str) -> str:
     return f'<div class="card"><h2>{h(label)}: {h(title)}</h2><pre>{h(text)}</pre></div>'
 
 
-def _tool_page(heading: str, intro: str, snippets) -> Response:
-    """A text-only setup page. `snippets` are (label, title, text) built from the saved routes."""
+def _tool_page(heading: str, intro: str, specific) -> Response:
+    """A text-only setup page: the tool's own (label, title, text) snippets, then the generated hook and proxy."""
     routes = _list_routes()
     if routes:
-        content = "".join(_snippet(label, title, text) for label, title, text in snippets(routes))
+        entries = (
+            *specific,
+            ("CLI", HOOK_FILE, generate_hook(routes)),
+            ("CLI", PROXY_FILE, generate_proxy(routes, load_thresholds())),
+        )
+        content = "".join(_snippet(label, title, text) for label, title, text in entries)
     else:
         content = '<p class="muted">Routes are needed first: <a href="/routes">add routes</a>.</p>'
     body = (
@@ -312,11 +317,9 @@ def integrations_claude_code(req: Request) -> Response:
     return _tool_page(
         "Claude Code",
         f"Run {PROXY_FILE} yourself and merge the settings into your settings.json.",
-        lambda routes: (
+        (
             ("CLI", "settings.json env", settings_env_snippet()),
             ("CLI", f"optional settings.json hook for {HOOK_FILE}", settings_hook_snippet()),
-            ("CLI", HOOK_FILE, generate_hook(routes)),
-            ("CLI", PROXY_FILE, generate_proxy(routes, load_thresholds())),
         ),
     )
 
@@ -326,11 +329,9 @@ def integrations_codex(req: Request) -> Response:
     return _tool_page(
         "Codex",
         f"Run {PROXY_FILE} yourself and merge the blocks into your {CODEX_CONFIG_FILE}.",
-        lambda routes: (
+        (
             (UNVERIFIED, f"{CODEX_CONFIG_FILE} provider", codex_provider_snippet()),
             (UNVERIFIED, f"{CODEX_CONFIG_FILE} hook for {HOOK_FILE}", codex_hook_snippet()),
-            ("CLI", HOOK_FILE, generate_hook(routes)),
-            ("CLI", PROXY_FILE, generate_proxy(routes, load_thresholds())),
         ),
     )
 
@@ -340,11 +341,9 @@ def integrations_hermes(req: Request) -> Response:
     return _tool_page(
         "Hermes",
         f"Run {PROXY_FILE} yourself and merge the entries into your {HERMES_CONFIG_FILE}.",
-        lambda routes: (
+        (
             (UNVERIFIED, f"{HERMES_CONFIG_FILE} custom provider", hermes_provider_snippet()),
             (UNVERIFIED, f"{HERMES_CONFIG_FILE} shell hook for {HOOK_FILE}", hermes_hook_snippet()),
-            ("CLI", HOOK_FILE, generate_hook(routes)),
-            ("CLI", PROXY_FILE, generate_proxy(routes, load_thresholds())),
         ),
     )
 

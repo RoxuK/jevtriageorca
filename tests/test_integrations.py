@@ -294,6 +294,19 @@ class IntegrationsTest(AppTestCase):
                     labels = [l for l in ("CLI", "Desktop", "not verified on Desktop") if heading.startswith(l + ": ")]
                     self.assertEqual(len(labels), 1, heading)
 
+    def test_codex_and_hermes_show_hook_config_proxy_and_unverified_labels(self):
+        self.add(CHEAP)
+        hook_markers = {"/integrations/codex": "UserPromptSubmit", "/integrations/hermes": "pre_llm_call"}
+        for path, marker in hook_markers.items():
+            with self.subTest(path=path):
+                body = html.unescape(self.fetch(path))
+                headings = re.findall(r"<h2>(.*?)</h2>", body)
+                self.assertIn(marker, body)
+                self.assertIn("LISTEN_PORT = 8787", body)
+                self.assertIn("CLI: route_hook.py", headings)
+                self.assertIn("CLI: route_proxy.py", headings)
+                self.assertEqual(len([x for x in headings if x.startswith("not verified on Desktop: ")]), 2)
+
     def test_renamed_route_replaces_old_name(self):
         self.add(CHEAP)
         import sqlite3, os
