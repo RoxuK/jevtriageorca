@@ -64,6 +64,16 @@ class IntegrationsTest(AppTestCase):
                        "OPENROUTER_API_KEY", "8787"):
             self.assertIn(needle, text)
 
+    def test_proxy_does_not_forward_accept_encoding(self):
+        self.add(CHEAP)
+        self.assertIn('("host", "content-length", "accept-encoding")', self.proxy_text())
+
+    def test_proxy_logs_jev_failure_to_stderr(self):
+        self.add(CHEAP)
+        text = self.proxy_text()
+        self.assertIn("file=sys.stderr", text)
+        self.assertIn("import sys", text)
+
     def test_text_never_contains_a_key_value(self):
         self.add(CHEAP)
         self.assertNotRegex(self.proxy_text(), r"sk-or-")

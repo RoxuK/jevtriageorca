@@ -22,6 +22,7 @@ Needs the OPENROUTER_API_KEY environment variable."""
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -83,7 +84,8 @@ def choose_route(task):
             return expensive
         chosen = int(answer["choice"].split("_", 1)[1])
         return next(r for r in ROUTES if r[0] == chosen)
-    except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration):
+    except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as err:
+        print("route_proxy: Jev failed (%s: %s); using route %d" % (type(err).__name__, err, expensive[0]), file=sys.stderr)
         return expensive
 
 
@@ -99,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, "request body must be a JSON object")
             return
         body["model"] = choose_route(task_text(body))[3]
-        headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length")}
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length", "accept-encoding")}
         forward = urllib.request.Request(
             UPSTREAM_BASE_URL + self.path, data=json.dumps(body).encode(), headers=headers, method="POST"
         )
