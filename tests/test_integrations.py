@@ -142,6 +142,12 @@ class IntegrationsTest(AppTestCase):
     def test_index_links_to_claude_code(self):
         self.assertIn('href="/integrations/claude-code"', self.get("/integrations")[2])
 
+    def test_states_hooks_cannot_switch_the_model(self):
+        sentence = "Hooks cannot switch the model; routing needs the proxy."
+        self.assertIn(sentence, self.page())
+        self.add(CHEAP)
+        self.assertIn(sentence, self.page())
+
     def test_without_routes_asks_for_routes(self):
         body = self.page()
         self.assertIn('href="/routes"', body)

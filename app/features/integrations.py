@@ -235,6 +235,9 @@ def integrations_index(req: Request) -> Response:
     return html_response(page("Integrations", body))
 
 
+HOOK_LIMIT_NOTE = "Hooks cannot switch the model; routing needs the proxy."
+
+
 def _snippet(label: str, text: str) -> str:
     return f'<div class="card"><h2>{h(label)}</h2><pre>{h(text)}</pre></div>'
 
@@ -256,6 +259,7 @@ def integrations_claude_code(req: Request) -> Response:
         f'<p class="muted">Run {h(PROXY_FILE)} yourself and merge the settings into your settings.json. '
         "Set OPENROUTER_API_KEY in your own environment; it is never part of these snippets. "
         "This app only shows the text; it does not run or install it.</p>"
+        f'<p class="muted">{h(HOOK_LIMIT_NOTE)}</p>'
         f"{content}"
     )
     return html_response(page("Claude Code", body))
