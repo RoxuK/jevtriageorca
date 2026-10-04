@@ -16,6 +16,7 @@ NAV.append(("/integrations", "Integrations"))
 PROXY_FILE = "route_proxy.py"
 HOOK_FILE = "route_hook.py"
 PROXY_PORT = 8787
+PROXY_URL = f"http://127.0.0.1:{PROXY_PORT}"
 UPSTREAM_BASE_URL = "https://openrouter.ai/api"
 
 _PROXY_TEMPLATE = '''\
@@ -194,7 +195,7 @@ def generate_hook(routes) -> str:
 
 def settings_env_snippet() -> str:
     """settings.json env block pointing Claude Code at the local proxy; carries no key value."""
-    env = {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{PROXY_PORT}"}
+    env = {"ANTHROPIC_BASE_URL": PROXY_URL}
     return json.dumps({"env": env}, indent=2)
 
 
@@ -231,38 +232,120 @@ def integrations_index(req: Request) -> Response:
         f'<p class="muted">The generated {h(PROXY_FILE)} route proxy.</p></div>'
         '<div class="card"><h2><a href="/integrations/claude-code">CLI: Claude Code</a></h2>'
         '<p class="muted">Settings, an optional hook and the proxy for Claude Code.</p></div>'
+        '<div class="card"><h2><a href="/integrations/codex">CLI: Codex</a></h2>'
+        '<p class="muted">A config.toml provider, a hook and the proxy for Codex.</p></div>'
+        '<div class="card"><h2><a href="/integrations/hermes">CLI: Hermes</a></h2>'
+        '<p class="muted">A config.yaml custom provider, a shell hook and the proxy for Hermes.</p></div>'
     )
     return html_response(page("Integrations", body))
 
 
 HOOK_LIMIT_NOTE = "Hooks cannot switch the model; routing needs the proxy."
+LABELS = ("CLI", "Desktop", "not verified on Desktop")
+UNVERIFIED = LABELS[2]
+CODEX_CONFIG_FILE = "config.toml"
+HERMES_CONFIG_FILE = "config.yaml"
 
 
-def _snippet(label: str, text: str) -> str:
-    return f'<div class="card"><h2>{h(label)}</h2><pre>{h(text)}</pre></div>'
+def codex_provider_snippet() -> str:
+    """config.toml block pointing Codex at the local proxy; the key is named, never valued."""
+    return (
+        'model_provider = "jevroute"\n\n'
+        "[model_providers.jevroute]\n"
+        'name = "Jev route proxy"\n'
+        f'base_url = "{PROXY_URL}"\n'
+        'env_key = "OPENROUTER_API_KEY"\n'
+    )
+
+
+def codex_hook_snippet() -> str:
+    return (
+        "[[hooks.UserPromptSubmit]]\n\n"
+        "[[hooks.UserPromptSubmit.hooks]]\n"
+        'type = "command"\n'
+        f'command = "python3 {HOOK_FILE}"\n'
+    )
+
+
+def hermes_provider_snippet() -> str:
+    return (
+        "custom_providers:\n"
+        "  - name: jevroute\n"
+        f"    base_url: {PROXY_URL}\n"
+        "    key_env: OPENROUTER_API_KEY\n"
+    )
+
+
+def hermes_hook_snippet() -> str:
+    return (
+        "hooks:\n"
+        "  pre_llm_call:\n"
+        f'    - command: "python3 {HOOK_FILE}"\n'
+    )
+
+
+def _snippet(label: str, title: str, text: str) -> str:
+    if label not in LABELS:
+        raise ValueError(f"unknown snippet label: {label}")
+    return f'<div class="card"><h2>{h(label)}: {h(title)}</h2><pre>{h(text)}</pre></div>'
+
+
+def _tool_page(heading: str, intro: str, specific) -> Response:
+    """A text-only setup page: the tool's own (label, title, text) snippets, then the generated hook and proxy."""
+    routes = _list_routes()
+    if routes:
+        entries = (
+            *specific,
+            ("CLI", HOOK_FILE, generate_hook(routes)),
+            ("CLI", PROXY_FILE, generate_proxy(routes, load_thresholds())),
+        )
+        content = "".join(_snippet(label, title, text) for label, title, text in entries)
+    else:
+        content = '<p class="muted">Routes are needed first: <a href="/routes">add routes</a>.</p>'
+    body = (
+        f"<h1>{h(heading)}</h1>"
+        f'<p class="muted">{h(intro)} Set OPENROUTER_API_KEY in your own environment; '
+        "it is never part of these snippets. This app only shows the text; it does not run or install it.</p>"
+        f'<p class="muted">{h(HOOK_LIMIT_NOTE)}</p>'
+        f"{content}"
+    )
+    return html_response(page(heading, body))
 
 
 @route("GET", "/integrations/claude-code")
 def integrations_claude_code(req: Request) -> Response:
-    routes = _list_routes()
-    if routes:
-        content = (
-            _snippet("CLI: settings.json env", settings_env_snippet())
-            + _snippet(f"CLI: optional settings.json hook for {HOOK_FILE}", settings_hook_snippet())
-            + _snippet(f"CLI: {HOOK_FILE}", generate_hook(routes))
-            + _snippet(f"CLI: {PROXY_FILE}", generate_proxy(routes, load_thresholds()))
-        )
-    else:
-        content = '<p class="muted">Routes are needed first: <a href="/routes">add routes</a>.</p>'
-    body = (
-        "<h1>Claude Code</h1>"
-        f'<p class="muted">Run {h(PROXY_FILE)} yourself and merge the settings into your settings.json. '
-        "Set OPENROUTER_API_KEY in your own environment; it is never part of these snippets. "
-        "This app only shows the text; it does not run or install it.</p>"
-        f'<p class="muted">{h(HOOK_LIMIT_NOTE)}</p>'
-        f"{content}"
+    return _tool_page(
+        "Claude Code",
+        f"Run {PROXY_FILE} yourself and merge the settings into your settings.json.",
+        (
+            ("CLI", "settings.json env", settings_env_snippet()),
+            ("CLI", f"optional settings.json hook for {HOOK_FILE}", settings_hook_snippet()),
+        ),
     )
-    return html_response(page("Claude Code", body))
+
+
+@route("GET", "/integrations/codex")
+def integrations_codex(req: Request) -> Response:
+    return _tool_page(
+        "Codex",
+        f"Run {PROXY_FILE} yourself and merge the blocks into your {CODEX_CONFIG_FILE}.",
+        (
+            (UNVERIFIED, f"{CODEX_CONFIG_FILE} provider", codex_provider_snippet()),
+            (UNVERIFIED, f"{CODEX_CONFIG_FILE} hook for {HOOK_FILE}", codex_hook_snippet()),
+        ),
+    )
+
+
+@route("GET", "/integrations/hermes")
+def integrations_hermes(req: Request) -> Response:
+    return _tool_page(
+        "Hermes",
+        f"Run {PROXY_FILE} yourself and merge the entries into your {HERMES_CONFIG_FILE}.",
+        (
+            (UNVERIFIED, f"{HERMES_CONFIG_FILE} custom provider", hermes_provider_snippet()),
+            (UNVERIFIED, f"{HERMES_CONFIG_FILE} shell hook for {HOOK_FILE}", hermes_hook_snippet()),
+        ),
+    )
 
 
 @route("GET", "/integrations/proxy")

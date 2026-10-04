@@ -256,3 +256,106 @@ class IntegrationsTest(AppTestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
         self.assertIn("route_hook: Jev failed", result.stderr)
+
+    PAGES = {"/integrations/codex": ("config.toml", "[model_providers.jevroute]"),
+             "/integrations/hermes": ("config.yaml", "custom_providers:")}
+
+    def fetch(self, path: str) -> str:
+        status, _, body = self.get(path)
+        self.assertEqual(status, 200)
+        return body
+
+    def test_pages_are_linked_and_show_config_and_proxy_address(self):
+        index = self.get("/integrations")[2]
+        self.add(CHEAP)
+        for path, needles in self.PAGES.items():
+            with self.subTest(path=path):
+                self.assertIn(f'href="{path}"', index)
+                body = html.unescape(self.fetch(path))
+                for needle in (*needles, "http://127.0.0.1:8787"):
+                    self.assertIn(needle, body)
+
+    def test_hook_snippet_contains_each_route_name_and_criteria(self):
+        self.add(CHEAP, STRONG)
+        for path in self.PAGES:
+            with self.subTest(path=path):
+                body = html.unescape(self.fetch(path))
+                for value in (CHEAP["name"], CHEAP["criteria"], STRONG["name"], STRONG["criteria"]):
+                    self.assertIn(repr(value), body)
+
+    def test_every_snippet_has_exactly_one_label(self):
+        self.add(CHEAP)
+        for path in ("/integrations/claude-code", *self.PAGES):
+            with self.subTest(path=path):
+                body = self.fetch(path)
+                headings = re.findall(r"<h2>(.*?)</h2>", body)
+                self.assertEqual(len(headings), body.count("<pre>"))
+                for heading in headings:
+                    labels = [l for l in ("CLI", "Desktop", "not verified on Desktop") if heading.startswith(l + ": ")]
+                    self.assertEqual(len(labels), 1, heading)
+
+    def test_codex_and_hermes_show_hook_config_proxy_and_unverified_labels(self):
+        self.add(CHEAP)
+        hook_markers = {"/integrations/codex": "UserPromptSubmit", "/integrations/hermes": "pre_llm_call"}
+        for path, marker in hook_markers.items():
+            with self.subTest(path=path):
+                body = html.unescape(self.fetch(path))
+                headings = re.findall(r"<h2>(.*?)</h2>", body)
+                self.assertIn(marker, body)
+                self.assertIn("LISTEN_PORT = 8787", body)
+                self.assertIn("CLI: route_hook.py", headings)
+                self.assertIn("CLI: route_proxy.py", headings)
+                self.assertEqual(len([x for x in headings if x.startswith("not verified on Desktop: ")]), 2)
+
+    def test_renamed_route_replaces_old_name(self):
+        self.add(CHEAP)
+        import sqlite3, os
+        conn = sqlite3.connect(os.environ["APP_DATABASE"])
+        try:
+            with conn:
+                conn.execute("UPDATE routes SET name = 'renamed-route'")
+        finally:
+            conn.close()
+        for path in self.PAGES:
+            with self.subTest(path=path):
+                body = self.fetch(path)
+                self.assertIn("renamed-route", body)
+                self.assertNotIn("'cheap'", body)
+
+    def test_hostile_values_are_escaped(self):
+        self.add(HOSTILE)
+        for path in self.PAGES:
+            with self.subTest(path=path):
+                body = self.fetch(path)
+                self.assertNotIn("<script>", body)
+                self.assertNotIn("<img", body)
+                self.assertIn("alert(1)", body)
+                self.assertIn("onerror=alert(2)", body)
+
+    def test_api_key_value_never_appears(self):
+        import os
+        os.environ["OPENROUTER_API_KEY"] = "test-key"
+        try:
+            self.add(CHEAP)
+            for path in self.PAGES:
+                with self.subTest(path=path):
+                    body = self.fetch(path)
+                    self.assertNotIn("test-key", body)
+                    self.assertIn("OPENROUTER_API_KEY", body)
+        finally:
+            del os.environ["OPENROUTER_API_KEY"]
+
+    def test_pages_have_no_form_or_button(self):
+        self.add(CHEAP)
+        for path in self.PAGES:
+            with self.subTest(path=path):
+                body = self.fetch(path)
+                self.assertNotIn("<form", body)
+                self.assertNotIn("<button", body)
+
+    def test_without_routes_asks_for_routes(self):
+        for path in self.PAGES:
+            with self.subTest(path=path):
+                body = self.fetch(path)
+                self.assertIn('href="/routes"', body)
+                self.assertNotIn("<pre>", body)
