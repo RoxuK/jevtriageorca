@@ -1,8 +1,12 @@
 import os
 import re
 import sqlite3
+import urllib.error
+from unittest import mock
 
+from app.features import tester
 from tests.support import AppTestCase
+from tests.test_decider import FakeTransport, _answer
 
 CHEAP = {"name": "cheap", "criteria": "small edits, renames, typos",
          "target_model": "anthropic/claude-haiku-4.5", "price_cents": "100"}
@@ -158,3 +162,66 @@ class TesterTest(AppTestCase):
 
     def test_decision_id_beyond_int_digit_limit_is_404(self):
         self.assertEqual(self.get("/decisions/" + "9" * 5000)[0], 404)
+
+
+class JevSelectionTest(AppTestCase):
+    """Decider selection and the secret boundary, through the real server."""
+
+    setUp = TesterTest.setUp
+    sql = TesterTest.sql
+    add_routes = TesterTest.add_routes
+    decide = TesterTest.decide
+
+    def with_key(self, transport, key="test-key"):
+        for patcher in (
+            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": key}),
+            mock.patch.object(tester, "_jev_transport", transport),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def answer_for_routes(self):
+        ids = [r[0] for r in self.sql("SELECT id FROM routes ORDER BY id")]
+        probabilities = {f"route_{ids[0]}": 0.2, f"route_{ids[1]}": 0.8}
+        return _answer(choice=f"route_{ids[1]}", confidence=0.6, probabilities=probabilities)
+
+    def test_unset_key_selects_offline(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            self.assertIsInstance(tester._select_decider(), tester.OfflineDecider)
+
+    def test_empty_key_selects_offline_and_page_says_offline(self):
+        self.add_routes(CHEAP, STRONG)
+        transport = FakeTransport()
+        self.with_key(transport, "")
+        self.assertIsInstance(tester._select_decider(), tester.OfflineDecider)
+        self.assertIn("Decider: offline", self.get(self.decide())[2])
+        self.assertEqual(transport.requests, [])
+
+    def test_key_selects_jev_and_page_says_jev(self):
+        self.add_routes(CHEAP, STRONG)
+        self.with_key(FakeTransport(self.answer_for_routes()))
+        self.assertIsInstance(tester._select_decider(), tester.JevDecider)
+        body = self.get(self.decide())[2]
+        self.assertIn("Decider: jev", body)
+        self.assertIn("<td>strong</td><td>0.800</td>", body)
+        self.assertEqual(self.sql("SELECT decider FROM decisions"), [("jev",)])
+
+    def test_failing_transport_saves_an_offline_decision(self):
+        self.add_routes(CHEAP, STRONG)
+        self.with_key(FakeTransport(error=urllib.error.URLError("down")))
+        self.assertIn("Decider: offline", self.get(self.decide())[2])
+        self.assertEqual(self.sql("SELECT decider FROM decisions"), [("offline",)])
+
+    def test_key_appears_on_no_page_and_in_no_row(self):
+        self.add_routes(CHEAP, STRONG)
+        self.with_key(FakeTransport(self.answer_for_routes()))
+        location = self.decide()
+        for path in ("/tester", location, "/routes"):
+            self.assertNotIn("test-key", self.get(path)[2])
+        conn = sqlite3.connect(os.environ["APP_DATABASE"])
+        try:
+            dump = "\n".join(conn.iterdump())
+        finally:
+            conn.close()
+        self.assertNotIn("test-key", dump)

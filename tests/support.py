@@ -29,9 +29,10 @@ class AppTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._tmp = tempfile.TemporaryDirectory()
-        cls._old_env = {k: os.environ.get(k) for k in ("APP_DATABASE", "APP_QUIET")}
+        cls._old_env = {k: os.environ.get(k) for k in ("APP_DATABASE", "APP_QUIET", "OPENROUTER_API_KEY")}
         os.environ["APP_DATABASE"] = str(Path(cls._tmp.name) / "test.sqlite")
         os.environ["APP_QUIET"] = "1"
+        os.environ.pop("OPENROUTER_API_KEY", None)  # tests answer offline unless they opt in
         from app.server import make_server
 
         cls.server = make_server("127.0.0.1", 0)
